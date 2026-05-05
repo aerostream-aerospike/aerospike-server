@@ -47,6 +47,7 @@ extern "C" {
 #include "base/datamodel.h"
 #include "base/security_config.h"
 #include "base/thr_info.h"
+#include "storage/storage.h"
 }
 
 //==========================================================
@@ -1455,6 +1456,26 @@ apply_namespace(std::string name, const nlohmann::json& namespace_json)
 	}
 }
 
+	// Match the .conf parser's NAMESPACE_STORAGE_MEMORY context-end checks
+	// (cfg.c:3784-3792). 'flush-size' is only meaningful for memory storage
+	// when shadow devices/files are configured: configuring it without
+	// shadows is a misconfiguration, and configuring shadows without an
+	// explicit flush-size needs the same default the .conf parser applies.
+	// (For 'storage-engine: device', the default is already applied when the
+	// 'type' field is processed.)
+	if (namespace_struct->storage_type == AS_STORAGE_ENGINE_MEMORY) {
+		if (namespace_struct->n_storage_shadows == 0 &&
+				namespace_struct->storage_flush_size != 0) {
+			throw config_error("/namespaces/storage-engine/flush-size",
+					"can't configure 'flush-size' if not using storage backing");
+		}
+		if (namespace_struct->n_storage_shadows != 0 &&
+				namespace_struct->storage_flush_size == 0) {
+			namespace_struct->storage_flush_size = DEFAULT_FLUSH_SIZE;
+		}
+	}
+}
+
 static void
 handle_namespaces(void* target, const FieldDescriptor& desc,
 		const nlohmann::json& value)
@@ -1481,6 +1502,7 @@ handle_namespace_write_commit_level_override(void* ns,
 		throw config_error("/namespaces/write-commit-level-override",
 				"must be a string");
 	}
+}
 
 	std::string write_commit_level_override = value.get<std::string>();
 
@@ -1513,6 +1535,7 @@ handle_namespace_xdr_bin_tombstone_ttl(void* ns, const FieldDescriptor& desc,
 		throw config_error("/namespaces/xdr-bin-tombstone-ttl",
 				"must be a positive integer");
 	}
+}
 
 	if (ttl > MAX_ALLOWED_TTL) {
 		throw config_error("/namespaces/xdr-bin-tombstone-ttl",
@@ -1773,7 +1796,10 @@ handle_namespace_storage_engine_type(void* ns, const FieldDescriptor& desc,
 	}
 	else if (storage_engine_type == "device") {
 		namespace_struct->storage_type = AS_STORAGE_ENGINE_SSD;
-		namespace_struct->storage_flush_size = 0;
+		// Match the .conf parser default - it gets overridden later if the
+		// user supplies an explicit 'flush-size' (descriptors are iterated in
+		// order, and 'flush-size' is processed after 'type').
+		namespace_struct->storage_flush_size = DEFAULT_FLUSH_SIZE;
 	}
 	else {
 		throw config_error("/namespaces/storage-engine/type",
