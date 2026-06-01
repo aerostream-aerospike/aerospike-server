@@ -183,6 +183,109 @@ typedef struct as_proto_s {
 #define PROTO_TYPE_INTERNAL_XDR         5
 #define PROTO_TYPE_LAST_PLUS_1          6
 
+/* AeroStream: stream message type constants */
+#define AS_PROTO_TYPE_STREAM_PRODUCE    10
+#define AS_PROTO_TYPE_STREAM_PROD_ACK   11
+#define AS_PROTO_TYPE_STREAM_CONSUME    12
+#define AS_PROTO_TYPE_STREAM_RECORD     13
+#define AS_PROTO_TYPE_STREAM_ACK        14
+#define AS_PROTO_TYPE_STREAM_SEEK       15
+#define AS_PROTO_TYPE_STREAM_SUB        16
+#define AS_PROTO_TYPE_STREAM_UNSUB      17
+
+/* AeroStream: seek type constants */
+#define AS_STREAM_SEEK_LATEST           0x00
+#define AS_STREAM_SEEK_EARLIEST         0x01
+#define AS_STREAM_SEEK_OFFSET           0x02
+#define AS_STREAM_SEEK_TIMESTAMP        0x03
+
+/* AeroStream: response status codes */
+#define AS_STREAM_OK                    0x00
+#define AS_STREAM_ERR_NOT_FOUND         0x01
+#define AS_STREAM_ERR_STORAGE           0x02
+#define AS_STREAM_ERR_OOO_ACK           0x03
+#define AS_STREAM_ERR_MAX_IN_FLIGHT     0x04
+#define AS_STREAM_ERR_INVALID_SEEK      0x05
+#define AS_STREAM_ERR_GROUP_NOT_FOUND   0x06
+#define AS_STREAM_ERR_AUTH              0x07
+
+/* AeroStream: wire structs */
+
+typedef struct __attribute__((packed)) as_stream_hdr_s {
+	uint64_t correlation_id;
+	uint8_t  stream_name[64];
+} as_stream_hdr;
+
+typedef struct __attribute__((packed)) as_stream_record_hdr_s {
+	int64_t  offset;
+	uint64_t timestamp_ns;
+	uint16_t headers_count;
+	uint32_t payload_size;
+} as_stream_record_hdr;
+
+typedef struct __attribute__((packed)) as_stream_header_entry_s {
+	uint16_t key_size;
+	uint16_t val_size;
+	/* followed by: uint8_t key[key_size], uint8_t val[val_size] */
+} as_stream_header_entry;
+
+typedef struct __attribute__((packed)) as_stream_produce_msg_s {
+	as_stream_hdr        hdr;
+	uint8_t              partition_key[64];
+	uint8_t              ack_mode;
+	as_stream_record_hdr rec_hdr;
+	/* followed by header entries then payload bytes */
+} as_stream_produce_msg;
+
+typedef struct __attribute__((packed)) as_stream_prod_ack_msg_s {
+	uint64_t correlation_id;
+	int64_t  offset;
+	uint32_t partition_id;
+	uint64_t timestamp_ns;
+	uint8_t  status;
+} as_stream_prod_ack_msg;
+
+typedef struct __attribute__((packed)) as_stream_consume_msg_s {
+	as_stream_hdr hdr;
+	uint8_t       group_name[64];
+	uint32_t      partition_id;
+	uint8_t       seek_type;
+	int64_t       seek_value;
+	uint32_t      max_in_flight;
+} as_stream_consume_msg;
+
+typedef struct __attribute__((packed)) as_stream_record_msg_s {
+	uint64_t             correlation_id;
+	uint32_t             partition_id;
+	as_stream_record_hdr rec_hdr;
+	/* followed by header entries then payload bytes */
+} as_stream_record_msg;
+
+typedef struct __attribute__((packed)) as_stream_ack_msg_s {
+	as_stream_hdr hdr;
+	uint8_t       group_name[64];
+	uint32_t      partition_id;
+	int64_t       offset;
+} as_stream_ack_msg;
+
+typedef struct __attribute__((packed)) as_stream_seek_msg_s {
+	as_stream_hdr hdr;
+	uint8_t       group_name[64];
+	uint32_t      partition_id;
+	uint8_t       seek_type;
+	int64_t       seek_value;
+} as_stream_seek_msg;
+
+typedef struct __attribute__((packed)) as_stream_sub_msg_s {
+	as_stream_hdr hdr;
+	uint8_t       topic[64];
+} as_stream_sub_msg;
+
+typedef struct __attribute__((packed)) as_stream_unsub_msg_s {
+	as_stream_hdr hdr;
+	uint8_t       unsub_type;
+} as_stream_unsub_msg;
+
 // Limit for sanity-checking.
 #define PROTO_SIZE_MAX (128 * 1024 * 1024)
 
@@ -747,6 +850,12 @@ size_t as_msg_send_fin_timeout(cf_socket* sock, uint32_t result_code,
 static inline bool
 as_proto_is_valid_type(const as_proto* proto)
 {
+	/* AeroStream: accept stream message types 10-17 in addition to core types */
+	if (proto->type >= AS_PROTO_TYPE_STREAM_PRODUCE &&
+			proto->type <= AS_PROTO_TYPE_STREAM_UNSUB) {
+		return true;
+	}
+
 	return proto->type != 0 && proto->type < PROTO_TYPE_LAST_PLUS_1;
 }
 

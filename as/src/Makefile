@@ -230,7 +230,11 @@ ifneq ($(USE_EE),1)
   TRANSACTION_SOURCES += rw_utils_ce.c
 endif
 
+AEROSTREAM_HEADERS += aerostream.h
+AEROSTREAM_SOURCES += aerostream.c
+
 HEADERS = $(BASE_HEADERS:%=base/%)
+HEADERS += $(AEROSTREAM_HEADERS:%=modules/aerostream/%)
 HEADERS += $(FABRIC_HEADERS:%=fabric/%)
 HEADERS += $(GEOSPATIAL_HEADERS:%=geospatial/%)
 HEADERS += $(QUERY_HEADERS:%=query/%)
@@ -240,6 +244,7 @@ HEADERS += $(TRANSACTION_HEADERS:%=transaction/%)
 HEADERS += $(XDR_HEADERS:%=xdr/%)
 
 SOURCES = $(BASE_SOURCES:%=base/%)
+SOURCES += $(AEROSTREAM_SOURCES:%=modules/aerostream/%)
 SOURCES += $(FABRIC_SOURCES:%=fabric/%)
 SOURCES += $(GEOSPATIAL_SOURCES:%=geospatial/%)
 SOURCES += $(QUERY_SOURCES:%=query/%)

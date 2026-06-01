@@ -52,6 +52,7 @@
 #include "trace.h"
 
 #include "base/batch.h"
+#include "modules/aerostream/aerostream.h" /* AeroStream: stream module */
 #include "base/cfg.h"
 #include "base/datamodel.h"
 #include "base/health.h"
@@ -438,6 +439,7 @@ as_run(int argc, char** argv)
 	as_query_manager_init(); // query transaction handling
 	as_udf_init(); // user-defined functions
 	as_batch_init(); // batch transaction handling
+	as_stream_module_init(); /* AeroStream: stream primitives */
 
 	// Start subsystems. At this point we may begin communicating with other
 	// cluster nodes, and ultimately with clients.

@@ -58,6 +58,7 @@
 #include "base/batch.h"
 #include "base/cfg.h"
 #include "base/datamodel.h"
+#include "modules/aerostream/aerostream.h" /* AeroStream: stream dispatch */
 #include "base/proto.h"
 #include "base/security.h"
 #include "base/stats.h"
@@ -1067,6 +1068,13 @@ start_transaction(as_file_handle* fd_h)
 		};
 
 		as_info(&it);
+		return;
+	}
+
+	/* AeroStream: dispatch stream message types 10-17 before as_transaction setup */
+	if (proto->type >= AS_PROTO_TYPE_STREAM_PRODUCE &&
+			proto->type <= AS_PROTO_TYPE_STREAM_UNSUB) {
+		as_stream_dispatch(fd_h, proto);
 		return;
 	}
 
