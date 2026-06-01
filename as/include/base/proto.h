@@ -199,15 +199,20 @@ typedef struct as_proto_s {
 #define AS_STREAM_SEEK_OFFSET           0x02
 #define AS_STREAM_SEEK_TIMESTAMP        0x03
 
-/* AeroStream: response status codes */
-#define AS_STREAM_OK                    0x00
-#define AS_STREAM_ERR_NOT_FOUND         0x01
-#define AS_STREAM_ERR_STORAGE           0x02
-#define AS_STREAM_ERR_OOO_ACK           0x03
-#define AS_STREAM_ERR_MAX_IN_FLIGHT     0x04
-#define AS_STREAM_ERR_INVALID_SEEK      0x05
-#define AS_STREAM_ERR_GROUP_NOT_FOUND   0x06
-#define AS_STREAM_ERR_AUTH              0x07
+/*
+ * AeroStream: response status codes.
+ * Prefixed AEROSTREAM_ (not AS_STREAM_) to avoid clashing with the
+ * Aerospike C client SDK's as_stream_status enum in aerospike/as_stream.h,
+ * which uses AS_STREAM_OK / AS_STREAM_ERR as enum identifiers.
+ */
+#define AEROSTREAM_OK                   0x00
+#define AEROSTREAM_ERR_NOT_FOUND        0x01
+#define AEROSTREAM_ERR_STORAGE          0x02
+#define AEROSTREAM_ERR_OOO_ACK          0x03
+#define AEROSTREAM_ERR_MAX_IN_FLIGHT    0x04
+#define AEROSTREAM_ERR_INVALID_SEEK     0x05
+#define AEROSTREAM_ERR_GROUP_NOT_FOUND  0x06
+#define AEROSTREAM_ERR_AUTH             0x07
 
 /* AeroStream: wire structs */
 

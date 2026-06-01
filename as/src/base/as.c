@@ -490,6 +490,9 @@ as_run(int argc, char** argv)
 
 	cf_info(AS_AS, "initiating clean shutdown ...");
 
+	/* AeroStream: stop push threads and release module state */
+	as_stream_module_shutdown();
+
 	// If this node was not quiesced and storage shutdown takes very long (e.g.
 	// flushing pmem index), best to get kicked out of the cluster quickly.
 	as_hb_shutdown();

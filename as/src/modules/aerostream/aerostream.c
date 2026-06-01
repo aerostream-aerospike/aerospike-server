@@ -2,7 +2,7 @@
  * aerostream.c
  *
  * AeroStream module entry point: dispatch and phase-1 stubs.
- * Each stub echoes the correlation_id back with AS_STREAM_ERR_NOT_FOUND
+ * Each stub echoes the correlation_id back with AEROSTREAM_ERR_NOT_FOUND
  * so a client can confirm dispatch is wired correctly.
  *
  * Handlers return true  -> caller frees proto + rearms fd (request/response).
@@ -31,29 +31,17 @@
  */
 
 static const char *
-seek_type_name(uint8_t seek_type)
-{
-	switch (seek_type) {
-	case AS_STREAM_SEEK_LATEST:    return "LATEST";
-	case AS_STREAM_SEEK_EARLIEST:  return "EARLIEST";
-	case AS_STREAM_SEEK_OFFSET:    return "OFFSET";
-	case AS_STREAM_SEEK_TIMESTAMP: return "TIMESTAMP";
-	default:                       return "unknown";
-	}
-}
-
-static const char *
 status_name(uint8_t status)
 {
 	switch (status) {
-	case AS_STREAM_OK:                  return "OK";
-	case AS_STREAM_ERR_NOT_FOUND:       return "NOT_FOUND";
-	case AS_STREAM_ERR_STORAGE:         return "STORAGE";
-	case AS_STREAM_ERR_OOO_ACK:         return "OOO_ACK";
-	case AS_STREAM_ERR_MAX_IN_FLIGHT:   return "MAX_IN_FLIGHT";
-	case AS_STREAM_ERR_INVALID_SEEK:    return "INVALID_SEEK";
-	case AS_STREAM_ERR_GROUP_NOT_FOUND: return "GROUP_NOT_FOUND";
-	case AS_STREAM_ERR_AUTH:            return "AUTH";
+	case AEROSTREAM_OK:                  return "OK";
+	case AEROSTREAM_ERR_NOT_FOUND:       return "NOT_FOUND";
+	case AEROSTREAM_ERR_STORAGE:         return "STORAGE";
+	case AEROSTREAM_ERR_OOO_ACK:         return "OOO_ACK";
+	case AEROSTREAM_ERR_MAX_IN_FLIGHT:   return "MAX_IN_FLIGHT";
+	case AEROSTREAM_ERR_INVALID_SEEK:    return "INVALID_SEEK";
+	case AEROSTREAM_ERR_GROUP_NOT_FOUND: return "GROUP_NOT_FOUND";
+	case AEROSTREAM_ERR_AUTH:            return "AUTH";
 	default:                            return "unknown";
 	}
 }
@@ -131,183 +119,47 @@ static bool
 handle_produce(as_file_handle *fd_h, as_proto *proto)
 {
 	cf_debug(AS_SERVICE,
-			"aerostream: PRODUCE enter fd %d client %s proto_sz %lu",
-			CSFD(&fd_h->sock), fd_h->client, proto->sz);
-
-	if (proto->sz < sizeof(as_stream_produce_msg)) {
-		cf_warning(AS_SERVICE,
-				"aerostream: PRODUCE too short - got %lu need %zu fd %d client %s",
-				proto->sz, sizeof(as_stream_produce_msg),
-				CSFD(&fd_h->sock), fd_h->client);
-		return send_err(fd_h, 0, AS_STREAM_ERR_NOT_FOUND);
-	}
-
-	as_stream_produce_msg *msg = (as_stream_produce_msg *)proto->body;
-
-	uint64_t corr_id    = cf_swap_from_be64(msg->hdr.correlation_id);
-	uint16_t hdr_count  = cf_swap_from_be16(msg->rec_hdr.headers_count);
-	uint32_t payload_sz = cf_swap_from_be32(msg->rec_hdr.payload_size);
-
-	cf_debug(AS_SERVICE,
-			"aerostream: PRODUCE stream=%.63s corr_id %lu partition_key=%.63s "
-			"ack_mode %u headers %u payload_sz %u fd %d client %s [stub]",
-			msg->hdr.stream_name, corr_id,
-			msg->partition_key,
-			msg->ack_mode,
-			hdr_count, payload_sz,
+			"aerostream: PRODUCE delegating to as_stream_log fd %d client %s",
 			CSFD(&fd_h->sock), fd_h->client);
-
-	bool ok = send_err(fd_h, msg->hdr.correlation_id, AS_STREAM_ERR_NOT_FOUND);
-
-	cf_debug(AS_SERVICE,
-			"aerostream: PRODUCE exit stream=%.63s corr_id %lu send_ok %d",
-			msg->hdr.stream_name, corr_id, (int)ok);
-
-	return ok;
+	return as_stream_log_handle_produce(fd_h, proto);
 }
 
 static bool
 handle_consume(as_file_handle *fd_h, as_proto *proto)
 {
 	cf_debug(AS_SERVICE,
-			"aerostream: CONSUME enter fd %d client %s proto_sz %lu",
-			CSFD(&fd_h->sock), fd_h->client, proto->sz);
-
-	if (proto->sz < sizeof(as_stream_consume_msg)) {
-		cf_warning(AS_SERVICE,
-				"aerostream: CONSUME too short - got %lu need %zu fd %d client %s",
-				proto->sz, sizeof(as_stream_consume_msg),
-				CSFD(&fd_h->sock), fd_h->client);
-		return send_err(fd_h, 0, AS_STREAM_ERR_NOT_FOUND);
-	}
-
-	as_stream_consume_msg *msg = (as_stream_consume_msg *)proto->body;
-
-	uint64_t corr_id      = cf_swap_from_be64(msg->hdr.correlation_id);
-	uint32_t partition_id = cf_swap_from_be32(msg->partition_id);
-	int64_t  seek_val     = (int64_t)cf_swap_from_be64((uint64_t)msg->seek_value);
-	uint32_t max_flight   = cf_swap_from_be32(msg->max_in_flight);
-
-	if (partition_id == 0xFFFFFFFF) {
-		cf_debug(AS_SERVICE,
-				"aerostream: CONSUME stream=%.63s group=%.63s corr_id %lu "
-				"partition=ALL seek_type %s seek_val %ld max_in_flight %u "
-				"fd %d client %s [stub]",
-				msg->hdr.stream_name, msg->group_name, corr_id,
-				seek_type_name(msg->seek_type), seek_val, max_flight,
-				CSFD(&fd_h->sock), fd_h->client);
-	}
-	else {
-		cf_debug(AS_SERVICE,
-				"aerostream: CONSUME stream=%.63s group=%.63s corr_id %lu "
-				"partition %u seek_type %s seek_val %ld max_in_flight %u "
-				"fd %d client %s [stub]",
-				msg->hdr.stream_name, msg->group_name, corr_id,
-				partition_id,
-				seek_type_name(msg->seek_type), seek_val, max_flight,
-				CSFD(&fd_h->sock), fd_h->client);
-	}
-
-	/* phase-4: will take ownership of fd_h and return false without send_err */
-	bool ok = send_err(fd_h, msg->hdr.correlation_id, AS_STREAM_ERR_NOT_FOUND);
-
-	cf_debug(AS_SERVICE,
-			"aerostream: CONSUME exit stream=%.63s group=%.63s corr_id %lu "
-			"send_ok %d",
-			msg->hdr.stream_name, msg->group_name, corr_id, (int)ok);
-
-	return ok;
+			"aerostream: CONSUME delegating to as_stream_log fd %d client %s",
+			CSFD(&fd_h->sock), fd_h->client);
+	return as_stream_log_handle_consume(fd_h, proto);
 }
 
 static bool
 handle_ack(as_file_handle *fd_h, as_proto *proto)
 {
 	cf_debug(AS_SERVICE,
-			"aerostream: ACK enter fd %d client %s proto_sz %lu",
-			CSFD(&fd_h->sock), fd_h->client, proto->sz);
-
-	if (proto->sz < sizeof(as_stream_ack_msg)) {
-		cf_warning(AS_SERVICE,
-				"aerostream: ACK too short - got %lu need %zu fd %d client %s",
-				proto->sz, sizeof(as_stream_ack_msg),
-				CSFD(&fd_h->sock), fd_h->client);
-		return send_err(fd_h, 0, AS_STREAM_ERR_NOT_FOUND);
-	}
-
-	as_stream_ack_msg *msg = (as_stream_ack_msg *)proto->body;
-
-	uint64_t corr_id      = cf_swap_from_be64(msg->hdr.correlation_id);
-	uint32_t partition_id = cf_swap_from_be32(msg->partition_id);
-	int64_t  offset       = (int64_t)cf_swap_from_be64((uint64_t)msg->offset);
-
-	cf_debug(AS_SERVICE,
-			"aerostream: ACK stream=%.63s group=%.63s corr_id %lu "
-			"partition %u offset %ld fd %d client %s [stub]",
-			msg->hdr.stream_name, msg->group_name, corr_id,
-			partition_id, offset,
+			"aerostream: ACK delegating to as_stream_log fd %d client %s",
 			CSFD(&fd_h->sock), fd_h->client);
-
-	bool ok = send_err(fd_h, msg->hdr.correlation_id, AS_STREAM_ERR_NOT_FOUND);
-
-	cf_debug(AS_SERVICE,
-			"aerostream: ACK exit stream=%.63s offset %ld send_ok %d",
-			msg->hdr.stream_name, offset, (int)ok);
-
-	return ok;
+	return as_stream_log_handle_ack(fd_h, proto);
 }
 
 static bool
 handle_seek(as_file_handle *fd_h, as_proto *proto)
 {
 	cf_debug(AS_SERVICE,
-			"aerostream: SEEK enter fd %d client %s proto_sz %lu",
-			CSFD(&fd_h->sock), fd_h->client, proto->sz);
-
-	if (proto->sz < sizeof(as_stream_seek_msg)) {
-		cf_warning(AS_SERVICE,
-				"aerostream: SEEK too short - got %lu need %zu fd %d client %s",
-				proto->sz, sizeof(as_stream_seek_msg),
-				CSFD(&fd_h->sock), fd_h->client);
-		return send_err(fd_h, 0, AS_STREAM_ERR_NOT_FOUND);
-	}
-
-	as_stream_seek_msg *msg = (as_stream_seek_msg *)proto->body;
-
-	uint64_t corr_id      = cf_swap_from_be64(msg->hdr.correlation_id);
-	uint32_t partition_id = cf_swap_from_be32(msg->partition_id);
-	int64_t  seek_val     = (int64_t)cf_swap_from_be64((uint64_t)msg->seek_value);
-
-	cf_debug(AS_SERVICE,
-			"aerostream: SEEK stream=%.63s group=%.63s corr_id %lu "
-			"partition %u seek_type %s seek_val %ld fd %d client %s [stub]",
-			msg->hdr.stream_name, msg->group_name, corr_id,
-			partition_id,
-			seek_type_name(msg->seek_type), seek_val,
+			"aerostream: SEEK delegating to as_stream_log fd %d client %s",
 			CSFD(&fd_h->sock), fd_h->client);
-
-	bool ok = send_err(fd_h, msg->hdr.correlation_id, AS_STREAM_ERR_NOT_FOUND);
-
-	cf_debug(AS_SERVICE,
-			"aerostream: SEEK exit stream=%.63s partition %u seek_val %ld "
-			"send_ok %d",
-			msg->hdr.stream_name, partition_id, seek_val, (int)ok);
-
-	return ok;
+	return as_stream_log_handle_seek(fd_h, proto);
 }
 
 static bool
 handle_sub(as_file_handle *fd_h, as_proto *proto)
 {
-	cf_debug(AS_SERVICE,
-			"aerostream: SUB enter fd %d client %s proto_sz %lu",
-			CSFD(&fd_h->sock), fd_h->client, proto->sz);
-
 	if (proto->sz < sizeof(as_stream_sub_msg)) {
 		cf_warning(AS_SERVICE,
-				"aerostream: SUB too short - got %lu need %zu fd %d client %s",
-				proto->sz, sizeof(as_stream_sub_msg),
+				"aerostream: SUB too short got %lu need %zu fd %d client %s",
+				(uint64_t)proto->sz, sizeof(as_stream_sub_msg),
 				CSFD(&fd_h->sock), fd_h->client);
-		return send_err(fd_h, 0, AS_STREAM_ERR_NOT_FOUND);
+		return send_err(fd_h, 0, AEROSTREAM_ERR_NOT_FOUND);
 	}
 
 	as_stream_sub_msg *msg = (as_stream_sub_msg *)proto->body;
@@ -315,55 +167,55 @@ handle_sub(as_file_handle *fd_h, as_proto *proto)
 	uint64_t corr_id = cf_swap_from_be64(msg->hdr.correlation_id);
 
 	cf_debug(AS_SERVICE,
-			"aerostream: SUB stream=%.63s topic=%.63s corr_id %lu "
-			"fd %d client %s [stub]",
-			msg->hdr.stream_name, msg->topic, corr_id,
-			CSFD(&fd_h->sock), fd_h->client);
+			"aerostream: SUB topic=%.63s corr_id %lu fd %d client %s",
+			msg->topic, corr_id, CSFD(&fd_h->sock), fd_h->client);
 
-	bool ok = send_err(fd_h, msg->hdr.correlation_id, AS_STREAM_ERR_NOT_FOUND);
+	as_stream_pubsub_subscribe(fd_h, corr_id, (const char *)msg->topic);
 
-	cf_debug(AS_SERVICE,
-			"aerostream: SUB exit topic=%.63s corr_id %lu send_ok %d",
-			msg->topic, corr_id, (int)ok);
+	cf_info(AS_SERVICE,
+			"aerostream: SUB registered topic=%.63s fd %d client %s",
+			msg->topic, CSFD(&fd_h->sock), fd_h->client);
 
-	return ok;
+	/* No wire response for SUB — delivery starts immediately on next produce. */
+	return true;
 }
 
 static bool
 handle_unsub(as_file_handle *fd_h, as_proto *proto)
 {
-	cf_debug(AS_SERVICE,
-			"aerostream: UNSUB enter fd %d client %s proto_sz %lu",
-			CSFD(&fd_h->sock), fd_h->client, proto->sz);
-
 	if (proto->sz < sizeof(as_stream_unsub_msg)) {
 		cf_warning(AS_SERVICE,
 				"aerostream: UNSUB too short - got %lu need %zu fd %d client %s",
-				proto->sz, sizeof(as_stream_unsub_msg),
+				(uint64_t)proto->sz, sizeof(as_stream_unsub_msg),
 				CSFD(&fd_h->sock), fd_h->client);
-		return send_err(fd_h, 0, AS_STREAM_ERR_NOT_FOUND);
+		return send_err(fd_h, 0, AEROSTREAM_ERR_NOT_FOUND);
 	}
 
 	as_stream_unsub_msg *msg = (as_stream_unsub_msg *)proto->body;
 
-	uint64_t corr_id    = cf_swap_from_be64(msg->hdr.correlation_id);
-	const char *unsub_type_str = (msg->unsub_type == 0x00) ?
-			"consume-session" : "pubsub-subscription";
+	if (msg->unsub_type == 0x00) {
+		cf_debug(AS_SERVICE,
+				"aerostream: UNSUB consume-session delegating fd %d client %s",
+				CSFD(&fd_h->sock), fd_h->client);
+		return as_stream_log_handle_unsub(fd_h, proto);
+	}
 
+	/* unsub_type == 0x01 — remove pub/sub subscription. */
 	cf_debug(AS_SERVICE,
-			"aerostream: UNSUB stream=%.63s corr_id %lu unsub_type %u (%s) "
-			"fd %d client %s [stub]",
-			msg->hdr.stream_name, corr_id,
-			msg->unsub_type, unsub_type_str,
-			CSFD(&fd_h->sock), fd_h->client);
+			"aerostream: UNSUB pubsub stream=%.63s fd %d client %s",
+			msg->hdr.stream_name, CSFD(&fd_h->sock), fd_h->client);
 
-	bool ok = send_err(fd_h, msg->hdr.correlation_id, AS_STREAM_ERR_NOT_FOUND);
+	/*
+	 * STREAM_UNSUB for pub/sub uses hdr.stream_name as the topic key,
+	 * matching how STREAM_SUB's topic field is used during fan-out.
+	 */
+	as_stream_pubsub_unsubscribe(fd_h, (const char *)msg->hdr.stream_name);
 
-	cf_debug(AS_SERVICE,
-			"aerostream: UNSUB exit stream=%.63s unsub_type %s send_ok %d",
-			msg->hdr.stream_name, unsub_type_str, (int)ok);
+	cf_info(AS_SERVICE,
+			"aerostream: UNSUB pubsub removed topic=%.63s fd %d client %s",
+			msg->hdr.stream_name, CSFD(&fd_h->sock), fd_h->client);
 
-	return ok;
+	return true;
 }
 
 /*
@@ -374,6 +226,8 @@ void
 as_stream_module_init(void)
 {
 	cf_info(AS_SERVICE, "aerostream: module init");
+	as_stream_config_module_init();
+	as_stream_log_module_init();
 }
 
 void
@@ -387,7 +241,7 @@ as_stream_dispatch(as_file_handle *fd_h, as_proto *proto)
 {
 	cf_debug(AS_SERVICE,
 			"aerostream: dispatch enter type %u (%s) proto_sz %lu fd %d client %s",
-			proto->type, proto_type_name(proto->type), proto->sz,
+			proto->type, proto_type_name(proto->type), (uint64_t)proto->sz,
 			CSFD(&fd_h->sock), fd_h->client);
 
 	bool rearm = true;

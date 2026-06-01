@@ -9,6 +9,11 @@
 
 #include "base/proto.h"
 #include "base/transaction.h"
+#include "modules/aerostream/as_stream_config.h"
+#include "modules/aerostream/as_stream_groups.h"
+#include "modules/aerostream/as_stream_log.h"
+#include "modules/aerostream/as_stream_pubsub.h"
+#include "modules/aerostream/as_stream_replay.h"
 
 /*
  * Called once at server startup, before any connections are accepted.

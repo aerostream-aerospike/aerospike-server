@@ -231,7 +231,17 @@ ifneq ($(USE_EE),1)
 endif
 
 AEROSTREAM_HEADERS += aerostream.h
+AEROSTREAM_HEADERS += as_stream_config.h
+AEROSTREAM_HEADERS += as_stream_groups.h
+AEROSTREAM_HEADERS += as_stream_log.h
+AEROSTREAM_HEADERS += as_stream_pubsub.h
+AEROSTREAM_HEADERS += as_stream_replay.h
 AEROSTREAM_SOURCES += aerostream.c
+AEROSTREAM_SOURCES += as_stream_config.c
+AEROSTREAM_SOURCES += as_stream_groups.c
+AEROSTREAM_SOURCES += as_stream_log.c
+AEROSTREAM_SOURCES += as_stream_pubsub.c
+AEROSTREAM_SOURCES += as_stream_replay.c
 
 HEADERS = $(BASE_HEADERS:%=base/%)
 HEADERS += $(AEROSTREAM_HEADERS:%=modules/aerostream/%)

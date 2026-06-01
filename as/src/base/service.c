@@ -941,6 +941,9 @@ stop_service(thread_ctx* ctx)
 static void
 delete_file_handle(as_file_handle* fd_h)
 {
+	/* AeroStream: remove any pub/sub subscriptions for this connection */
+	as_stream_pubsub_deregister_conn(fd_h);
+
 	cf_poll_delete_socket(fd_h->poll, &fd_h->sock);
 	fd_h->poll = INVALID_POLL;
 	fd_h->reap_me = true;
