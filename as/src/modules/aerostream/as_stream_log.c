@@ -53,6 +53,13 @@
 #define LOG_KEY_MAX_LEN  96
 
 /*
+ * Stack bin array size for storage reads. AeroStream records have at most a
+ * handful of bins; this avoids the multi-megabyte RECORD_MAX_BINS VLA in the
+ * per-record push loop.
+ */
+#define AS_STREAM_MAX_READ_BINS  8
+
+/*
  * Per-connection send lock. Shared across partition sessions when a consumer
  * subscribes to all partitions (partition_id = 0xFFFFFFFF) so concurrent push
  * loop threads serialise their writes to the same fd_h.
@@ -320,7 +327,14 @@ push_read_record(as_namespace *ns, const char *stream_name,
 
 	bool ok = false;
 
-	if (as_storage_record_load_bins(&rd) == 0) {
+	/*
+	 * Load bins into a caller-provided stack array. AeroStream log records
+	 * have at most 4 bins (payload, ts, offset, hdrs), so a small fixed array
+	 * is safe — no need for the multi-megabyte RECORD_MAX_BINS array.
+	 */
+	as_bin stack_bins[AS_STREAM_MAX_READ_BINS];
+
+	if (as_storage_rd_load_bins(&rd, stack_bins) >= 0) {
 		as_bin *ts_bin  = as_bin_get(&rd, "ts");
 		as_bin *pay_bin = as_bin_get(&rd, "payload");
 

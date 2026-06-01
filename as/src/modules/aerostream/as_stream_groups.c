@@ -203,7 +203,10 @@ as_stream_groups_get_offset(const char *stream, const char *group,
 
 	int64_t committed = -1;
 
-	if (as_storage_record_load_bins(&rd) == 0) {
+	/* Small stack array — consumer_offsets records have 3 bins. */
+	as_bin stack_bins[8];
+
+	if (as_storage_rd_load_bins(&rd, stack_bins) >= 0) {
 		as_bin *b = as_bin_get(&rd, BIN_COMMITTED);
 		if (b != NULL) {
 			committed = as_bin_particle_integer_value(b);

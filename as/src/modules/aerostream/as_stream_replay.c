@@ -61,7 +61,10 @@ read_record_ts(as_namespace *ns, const char *stream_name,
 
 	bool ok = false;
 
-	if (as_storage_record_load_bins(&rd) == 0) {
+	/* Small stack array — AeroStream records have at most a few bins. */
+	as_bin stack_bins[8];
+
+	if (as_storage_rd_load_bins(&rd, stack_bins) >= 0) {
 		as_bin *b = as_bin_get(&rd, "ts");
 		if (b != NULL) {
 			*out_ts = as_bin_particle_integer_value(b);

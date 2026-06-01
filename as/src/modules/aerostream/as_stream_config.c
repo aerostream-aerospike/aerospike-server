@@ -181,7 +181,10 @@ config_from_storage(const char *stream_name, as_stream_config *out_cfg)
 
 	bool ok = false;
 
-	if (as_storage_record_load_bins(&rd) == 0) {
+	/* Small stack array — config records have 3 bins. */
+	as_bin stack_bins[8];
+
+	if (as_storage_rd_load_bins(&rd, stack_bins) >= 0) {
 		as_bin *n_parts_bin  = as_bin_get(&rd, BIN_N_PARTS);
 		as_bin *ttl_sec_bin  = as_bin_get(&rd, BIN_TTL_SEC);
 		as_bin *ack_mode_bin = as_bin_get(&rd, BIN_ACK_MODE);
