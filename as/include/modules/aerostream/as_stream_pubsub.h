@@ -49,7 +49,8 @@ void as_stream_pubsub_unsubscribe(as_file_handle *fd_h, const char *topic);
  */
 void as_stream_pubsub_fanout(const char *stream_name,
 		uint32_t partition_id, int64_t offset, int64_t ts_ns,
-		const uint8_t *payload, uint32_t payload_sz);
+		const uint8_t *payload, uint32_t payload_sz,
+		const uint8_t *hdrs, uint32_t hdrs_sz);
 
 /*
  * Remove fd_h from every topic it is subscribed to.

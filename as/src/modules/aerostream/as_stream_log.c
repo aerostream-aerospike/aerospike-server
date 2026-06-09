@@ -84,6 +84,7 @@ typedef struct as_stream_session_s {
 	uint32_t                 max_in_flight;
 	uint32_t                 in_flight;     /* under push_lock */
 	bool                     active;        /* false = push loop will free */
+	bool                     bp_notified;   /* sent ERR_MAX_IN_FLIGHT, awaiting ack */
 	struct as_stream_session_s *next;
 } as_stream_session;
 
@@ -229,8 +230,17 @@ encode_blob_op(uint8_t *buf, const char *bin_name,
 static cl_msg *
 build_log_write_msg(uint32_t record_ttl,
 		const uint8_t *payload, uint32_t payload_sz,
-		int64_t ts_ns, int64_t offset)
+		int64_t ts_ns, int64_t offset,
+		const uint8_t *hdrs, uint32_t hdrs_sz)
 {
+	/*
+	 * The "hdrs" bin holds the raw header-entry bytes verbatim (the exact
+	 * on-wire as_stream_header_entry sequence). Storing the wire bytes makes
+	 * the round-trip byte-perfect — the consume path splices them straight back
+	 * into the STREAM_RECORD with no re-encoding. Only written when present.
+	 */
+	bool has_hdrs = (hdrs != NULL && hdrs_sz > 0);
+
 	/* Sizes of each op in the buffer. */
 	uint32_t op_payload_sz = sizeof(uint32_t) + OP_FIXED_SZ
 			+ strlen("payload") + payload_sz;
@@ -238,7 +248,9 @@ build_log_write_msg(uint32_t record_ttl,
 			+ strlen("ts") + sizeof(int64_t);
 	uint32_t op_offset_sz  = sizeof(uint32_t) + OP_FIXED_SZ
 			+ strlen("offset") + sizeof(int64_t);
-	uint32_t ops_sz = op_payload_sz + op_ts_sz + op_offset_sz;
+	uint32_t op_hdrs_sz    = has_hdrs ? (sizeof(uint32_t) + OP_FIXED_SZ
+			+ strlen("hdrs") + hdrs_sz) : 0;
+	uint32_t ops_sz = op_payload_sz + op_ts_sz + op_offset_sz + op_hdrs_sz;
 
 	/* Field sizes (4-byte field_sz + 1-byte type + name bytes). */
 	size_t ns_name_len  = strlen(AS_STREAM_NS);
@@ -266,7 +278,7 @@ build_log_write_msg(uint32_t record_ttl,
 	m->record_ttl      = record_ttl;
 	m->transaction_ttl = 0;
 	m->n_fields        = 2;  /* namespace + set */
-	m->n_ops           = 3;  /* payload, ts, offset */
+	m->n_ops           = has_hdrs ? 4 : 3;  /* payload, ts, offset [, hdrs] */
 
 	uint8_t *p = (uint8_t *)m->data;
 
@@ -288,6 +300,9 @@ build_log_write_msg(uint32_t record_ttl,
 	p += encode_blob_op(p, "payload", payload, payload_sz);
 	p += encode_int_op(p, "ts",     ts_ns);
 	p += encode_int_op(p, "offset", offset);
+	if (has_hdrs) {
+		p += encode_blob_op(p, "hdrs", hdrs, hdrs_sz);
+	}
 
 	return msgp;
 }
@@ -300,7 +315,8 @@ build_log_write_msg(uint32_t record_ttl,
 static bool
 push_read_record(as_namespace *ns, const char *stream_name,
 		uint32_t partition_id, int64_t offset,
-		uint8_t **out_payload, uint32_t *out_payload_sz, int64_t *out_ts_ns)
+		uint8_t **out_payload, uint32_t *out_payload_sz, int64_t *out_ts_ns,
+		uint8_t **out_hdrs, uint32_t *out_hdrs_sz)
 {
 	char key_str[LOG_KEY_MAX_LEN];
 	int  key_len = snprintf(key_str, sizeof(key_str), "%.63s:%u:%ld",
@@ -353,6 +369,19 @@ push_read_record(as_namespace *ns, const char *stream_name,
 			*out_payload_sz = 0;
 		}
 
+		/* Optional hdrs bin — the raw header-entry block, if any. */
+		as_bin *hdrs_bin = as_bin_get(&rd, "hdrs");
+		if (hdrs_bin != NULL) {
+			uint8_t *raw;
+			*out_hdrs_sz = as_bin_particle_blob_ptr(hdrs_bin, &raw);
+			*out_hdrs    = (uint8_t *)cf_malloc(*out_hdrs_sz);
+			memcpy(*out_hdrs, raw, *out_hdrs_sz);
+		}
+		else {
+			*out_hdrs    = NULL;
+			*out_hdrs_sz = 0;
+		}
+
 		ok = true;
 	}
 
@@ -364,18 +393,52 @@ push_read_record(as_namespace *ns, const char *stream_name,
 }
 
 /*
+ * Walk a raw header-entry block (the on-wire as_stream_header_entry sequence)
+ * and return how many complete entries it contains. Each entry is
+ * key_size(2, BE) + val_size(2, BE) + key + val. Returns 0 on a malformed block.
+ */
+static uint16_t
+count_header_entries(const uint8_t *hdrs, uint32_t sz)
+{
+	uint16_t count = 0;
+	uint32_t off = 0;
+
+	while (off + 4 <= sz) {
+		uint16_t key_size = cf_swap_from_be16(*(uint16_t *)(hdrs + off));
+		uint16_t val_size = cf_swap_from_be16(*(uint16_t *)(hdrs + off + 2));
+		uint32_t entry = 4u + key_size + val_size;
+
+		if (off + entry > sz) {
+			break;  /* truncated trailing entry */
+		}
+		off += entry;
+		count++;
+	}
+
+	return count;
+}
+
+/*
  * Build and send a STREAM_RECORD message on fd_h.
  * All numeric fields in big-endian on the wire.
+ * `hdrs` (may be NULL) is the raw header-entry block, spliced verbatim between
+ * the record header and payload — headers_count is derived from it.
  * Returns true on success, false if the socket write failed.
  * Non-static so as_stream_pubsub.c can use it for fan-out.
  */
 bool
 as_stream_log_send_record(as_file_handle *fd_h, uint64_t correlation_id,
 		uint32_t partition_id, int64_t offset, int64_t ts_ns,
-		const uint8_t *payload, uint32_t payload_sz)
+		const uint8_t *payload, uint32_t payload_sz,
+		const uint8_t *hdrs, uint32_t hdrs_sz)
 {
-	/* 8(corr) + 4(pid) + 8(offset) + 8(ts) + 2(hdr_count) + 4(pay_sz) = 34 */
-	size_t body_sz  = sizeof(as_stream_record_msg) + payload_sz;
+	if (hdrs == NULL) {
+		hdrs_sz = 0;
+	}
+	uint16_t hdrs_count = (hdrs_sz > 0) ? count_header_entries(hdrs, hdrs_sz) : 0;
+
+	/* fixed(34) + header entries + payload */
+	size_t body_sz  = sizeof(as_stream_record_msg) + hdrs_sz + payload_sz;
 	size_t total_sz = sizeof(as_proto) + body_sz;
 	uint8_t *buf    = (uint8_t *)cf_malloc(total_sz);
 	uint8_t *p      = buf;
@@ -399,12 +462,16 @@ as_stream_log_send_record(as_file_handle *fd_h, uint64_t correlation_id,
 	uint64_t be_ts = cf_swap_to_be64((uint64_t)ts_ns);
 	memcpy(p, &be_ts, 8);                        p += 8;
 
-	uint16_t be_hdr = cf_swap_to_be16(0);        /* headers_count = 0 */
+	uint16_t be_hdr = cf_swap_to_be16(hdrs_count);
 	memcpy(p, &be_hdr, 2);                       p += 2;
 
 	uint32_t be_pay = cf_swap_to_be32(payload_sz);
 	memcpy(p, &be_pay, 4);                       p += 4;
 
+	/* header entries (verbatim wire bytes), then payload */
+	if (hdrs_sz > 0) {
+		memcpy(p, hdrs, hdrs_sz);                p += hdrs_sz;
+	}
 	if (payload_sz > 0) {
 		memcpy(p, payload, payload_sz);
 	}
@@ -414,6 +481,30 @@ as_stream_log_send_record(as_file_handle *fd_h, uint64_t correlation_id,
 
 	cf_free(buf);
 	return ok;
+}
+
+/*
+ * Send a 1-byte status frame on a session connection. Used for back-pressure
+ * (AEROSTREAM_ERR_MAX_IN_FLIGHT): the proto carries the message type it pertains
+ * to (STREAM_CONSUME) plus a single status byte, per the protocol's error
+ * convention. Returns true if the write succeeded.
+ */
+static bool
+send_status(as_file_handle *fd_h, uint8_t msg_type, uint8_t status)
+{
+	struct __attribute__((packed)) {
+		as_proto proto;
+		uint8_t  status;
+	} frame;
+
+	frame.proto.version = PROTO_VERSION;
+	frame.proto.type    = msg_type;
+	frame.proto.sz      = 1;
+	as_proto_swap(&frame.proto);
+	frame.status = status;
+
+	return cf_socket_send_all(&fd_h->sock, &frame, sizeof(frame),
+			MSG_NOSIGNAL, CF_SOCKET_TIMEOUT) >= 0;
 }
 
 /*
@@ -508,8 +599,11 @@ push_loop_thread(void *udata)
 				uint8_t *payload    = NULL;
 				uint32_t payload_sz = 0;
 				int64_t  ts_ns      = 0;
+				uint8_t *hdrs       = NULL;
+				uint32_t hdrs_sz    = 0;
 				bool     found      = push_read_record(ns, state->name, pid,
-						read_off, &payload, &payload_sz, &ts_ns);
+						read_off, &payload, &payload_sz, &ts_ns,
+						&hdrs, &hdrs_sz);
 
 				bool sent = false;
 
@@ -517,17 +611,18 @@ push_loop_thread(void *udata)
 					cf_debug(AS_SERVICE,
 							"as_stream_log: push record "
 							"stream=%.63s partition %u offset %ld "
-							"payload_sz %u fd %d",
+							"payload_sz %u hdrs_sz %u fd %d",
 							state->name, pid, read_off,
-							payload_sz, CSFD(&fd_h->sock));
+							payload_sz, hdrs_sz, CSFD(&fd_h->sock));
 
 					/* Serialise write to fd_h across partition threads. */
 					cf_mutex_lock(&sl->mtx);
 					sent = as_stream_log_send_record(fd_h, corr_id, part_id,
-							read_off, ts_ns, payload, payload_sz);
+							read_off, ts_ns, payload, payload_sz, hdrs, hdrs_sz);
 					cf_mutex_unlock(&sl->mtx);
 
 					cf_free(payload);
+					cf_free(hdrs);
 				}
 
 				cf_mutex_lock(&part->push_lock);
@@ -555,6 +650,32 @@ push_loop_thread(void *udata)
 					/* Record not in storage yet — wait for next signal. */
 					break;
 				}
+			}
+
+			/*
+			 * Back-pressure: the session is paused with records still pending
+			 * (next_offset <= head) only because in_flight is full. Tell the
+			 * client once, so it can distinguish "you need to ack" from "caught
+			 * up / stream empty". Reset on the next ACK that frees a slot.
+			 */
+			if (sess->active && sess->in_flight >= sess->max_in_flight
+					&& sess->next_offset <= head && !sess->bp_notified) {
+				sess->bp_notified = true;
+				as_file_handle    *bp_fd = sess->fd_h;
+				as_stream_fd_lock *bp_sl = sess->send_lock;
+
+				cf_mutex_unlock(&part->push_lock);
+				cf_mutex_lock(&bp_sl->mtx);
+				send_status(bp_fd, AS_PROTO_TYPE_STREAM_CONSUME,
+						AEROSTREAM_ERR_MAX_IN_FLIGHT);
+				cf_mutex_unlock(&bp_sl->mtx);
+				cf_mutex_lock(&part->push_lock);
+
+				cf_debug(AS_SERVICE,
+						"as_stream_log: back-pressure sent stream=%.63s "
+						"partition %u in_flight %u fd %d",
+						state->name, pid, sess->max_in_flight,
+						CSFD(&bp_fd->sock));
 			}
 
 			prev = sess;
@@ -919,26 +1040,56 @@ as_stream_log_handle_produce(as_file_handle *fd_h, as_proto *proto)
 			msg->partition_key, ack_mode, hdr_count, payload_sz,
 			CSFD(&fd_h->sock), fd_h->client);
 
-	/* Validate that proto body covers fixed struct + payload. */
-	size_t min_body_sz = sizeof(as_stream_produce_msg) + payload_sz;
-	if (proto->sz < min_body_sz) {
+	/*
+	 * Body layout: [fixed 159][header entries][payload]. Walk hdr_count entries
+	 * to measure the header block, which tells us where the payload begins.
+	 * The header bytes are stored verbatim in the hdrs bin and replayed to
+	 * consumers unchanged.
+	 */
+	const uint8_t *body_end = proto->body + proto->sz;
+	const uint8_t *hdrs     = proto->body + sizeof(as_stream_produce_msg);
+	uint32_t       hdrs_sz  = 0;
+
+	{
+		const uint8_t *h = hdrs;
+		for (uint16_t i = 0; i < hdr_count; i++) {
+			if (h + 4 > body_end) {
+				cf_warning(AS_SERVICE,
+						"as_stream_log: PRODUCE truncated header entry %u fd %d",
+						i, CSFD(&fd_h->sock));
+				goto inline_err;
+			}
+			uint16_t ks = cf_swap_from_be16(*(uint16_t *)h);
+			uint16_t vs = cf_swap_from_be16(*(uint16_t *)(h + 2));
+			const uint8_t *nxt = h + 4 + ks + vs;
+			if (nxt > body_end) {
+				cf_warning(AS_SERVICE,
+						"as_stream_log: PRODUCE header entry %u overruns body fd %d",
+						i, CSFD(&fd_h->sock));
+				goto inline_err;
+			}
+			h = nxt;
+		}
+		hdrs_sz = (uint32_t)(h - hdrs);
+	}
+
+	/* Payload begins right after the header block. */
+	const uint8_t *payload = hdrs + hdrs_sz;
+
+	/* Validate the body covers fixed struct + headers + payload. */
+	size_t need_body = sizeof(as_stream_produce_msg) + hdrs_sz + payload_sz;
+	if (proto->sz < need_body) {
 		cf_warning(AS_SERVICE,
-				"as_stream_log: PRODUCE body too small for payload "
-				"got %lu need %zu fd %d",
-				(uint64_t)proto->sz, min_body_sz, CSFD(&fd_h->sock));
+				"as_stream_log: PRODUCE body too small got %lu need %zu fd %d",
+				(uint64_t)proto->sz, need_body, CSFD(&fd_h->sock));
 		goto inline_err;
 	}
 
-	/* Phase-3: silently skip header entries (TODO phase-5 hdrs bin). */
-	if (hdr_count > 0) {
-		cf_debug(AS_SERVICE,
-				"as_stream_log: PRODUCE stream=%.63s hdr_count %u ignored "
-				"(phase-3 limitation)",
-				msg->hdr.stream_name, hdr_count);
+	/* No headers → don't write the hdrs bin at all. */
+	if (hdr_count == 0) {
+		hdrs = NULL;
+		hdrs_sz = 0;
 	}
-
-	/* Payload bytes start immediately after the fixed struct. */
-	const uint8_t *payload = proto->body + sizeof(as_stream_produce_msg);
 
 	/* Get config (creates default config on first produce to this stream). */
 	as_stream_config cfg;
@@ -995,11 +1146,12 @@ as_stream_log_handle_produce(as_file_handle *fd_h, as_proto *proto)
 	as_stream_pubsub_fanout(
 			(const char *)msg->hdr.stream_name,
 			partition_id, offset, (int64_t)timestamp_ns,
-			payload, payload_sz);
+			payload, payload_sz, hdrs, hdrs_sz);
 
 	/* Build the cl_msg for the durable storage write. */
 	cl_msg *write_msgp = build_log_write_msg(
-			cfg.ttl_seconds, payload, payload_sz, (int64_t)timestamp_ns, offset);
+			cfg.ttl_seconds, payload, payload_sz, (int64_t)timestamp_ns, offset,
+			hdrs, hdrs_sz);
 
 	/* Allocate context — lives until produce_done_cb completes. */
 	as_stream_produce_ctx *ctx = (as_stream_produce_ctx *)cf_malloc(
@@ -1117,6 +1269,7 @@ register_session(as_stream_state *state, uint32_t partition_id,
 	sess->max_in_flight  = (max_in_flight == 0) ? 10 : max_in_flight;
 	sess->in_flight      = 0;
 	sess->active         = true;
+	sess->bp_notified    = false;
 
 	as_stream_partition *part = &state->partitions[partition_id];
 
@@ -1321,6 +1474,7 @@ as_stream_log_handle_ack(as_file_handle *fd_h, as_proto *proto)
 			if (sess->in_flight > 0) {
 				sess->in_flight--;
 			}
+			sess->bp_notified = false;  /* a slot freed; allow re-notify */
 			found = true;
 			break;
 		}
@@ -1430,6 +1584,7 @@ as_stream_log_handle_seek(as_file_handle *fd_h, as_proto *proto)
 						AS_STREAM_NAME_MAX_LEN) == 0) {
 			sess->next_offset = new_offset;
 			sess->in_flight   = 0;   /* abandon in-flight records at old pos */
+			sess->bp_notified = false;
 			found = true;
 
 			cf_debug(AS_SERVICE,

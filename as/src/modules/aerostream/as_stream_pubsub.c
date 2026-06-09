@@ -141,7 +141,8 @@ as_stream_pubsub_unsubscribe(as_file_handle *fd_h, const char *topic)
 void
 as_stream_pubsub_fanout(const char *stream_name,
 		uint32_t partition_id, int64_t offset, int64_t ts_ns,
-		const uint8_t *payload, uint32_t payload_sz)
+		const uint8_t *payload, uint32_t payload_sz,
+		const uint8_t *hdrs, uint32_t hdrs_sz)
 {
 	char key[AS_STREAM_PUBSUB_TOPIC_SZ];
 	make_topic_key(key, stream_name);
@@ -187,7 +188,7 @@ as_stream_pubsub_fanout(const char *stream_name,
 		bool ok = as_stream_log_send_record(entry.fd_h,
 				entry.correlation_id,
 				partition_id, offset, ts_ns,
-				payload, payload_sz);
+				payload, payload_sz, hdrs, hdrs_sz);
 
 		if (ok) {
 			delivered++;

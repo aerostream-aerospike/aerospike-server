@@ -8,10 +8,9 @@
  * Storage write: IOPS transaction writing bins payload/ts/offset to
  * namespace "aerostream", set "log", key "{stream}:{partition}:{offset}".
  *
- * Phase-3 known limitations:
- *  - Offset counters restart from 0 on server restart (config + offsets are
- *    in-memory only; reconstruction deferred until config is persisted).
- *  - Headers (hdrs bin) not written; headers_count > 0 is silently ignored.
+ * Headers: header entries are stored verbatim in the "hdrs" BLOB bin (the raw
+ * on-wire as_stream_header_entry sequence) and replayed to consumers unchanged,
+ * so per-record metadata round-trips byte-for-byte.
  */
 
 #pragma once
@@ -73,4 +72,5 @@ bool as_stream_log_handle_unsub(as_file_handle *fd_h, as_proto *proto);
  */
 bool as_stream_log_send_record(as_file_handle *fd_h, uint64_t correlation_id,
 		uint32_t partition_id, int64_t offset, int64_t ts_ns,
-		const uint8_t *payload, uint32_t payload_sz);
+		const uint8_t *payload, uint32_t payload_sz,
+		const uint8_t *hdrs, uint32_t hdrs_sz);

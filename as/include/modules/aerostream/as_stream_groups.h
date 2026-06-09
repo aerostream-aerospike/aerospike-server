@@ -9,11 +9,12 @@
  *
  * Reads use direct partition access (as_partition_reserve + as_record_get)
  * since they happen on the push loop thread which can block.
- * Writes use fire-and-forget IOPS so the ACK handler is not blocked.
  *
- * Phase-4 limitation: no CAS on commit — concurrent consumer instances on the
- * same group+partition can double-commit. CAS via as_operate deferred to
- * phase-5.
+ * Commits are CAS-protected: the ACK handler reads the current committed
+ * offset + record generation, then issues a generation-checked write (or
+ * create-only for the first commit). Concurrent consumers in the same group
+ * racing to commit cannot double-commit — the loser's write fails with
+ * AS_ERR_GENERATION and is dropped. The write itself is fire-and-forget IOPS.
  */
 
 #pragma once
